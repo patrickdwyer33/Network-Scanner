@@ -3,7 +3,6 @@ import time
 import json
 import subprocess
 from subprocess import TimeoutExpired
-import socket
 import http.client as http_client
 
 assert(len(sys.argv) == 3)
@@ -42,25 +41,6 @@ def get_addresses(website_name, type):
                         result.append(address)
     result = list(set(result))
     return result
-
-def get_insecure_http_bool(website_name):
-    http_server = None
-    insecure_http = False
-    redirect_to_https = False
-    try:
-        host_info = socket.getaddrinfo(host=website_name, port=80, family=socket.AF_INET, proto=socket.IPPROTO_TCP)
-        connection = host_info[0][4]
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2)
-        sock.setblocking(True)
-        sock.connect(connection)
-        return True
-    except TimeoutError:
-        return False
-    except Exception as e:
-        print(e)
-        print('Non TimeoutError exception during get_insecure_http_bool routing. Args: ' + website_name, file=sys.stderr)
-        return False
     
 def get_hsts(website_name):
     try:
@@ -74,7 +54,7 @@ def get_hsts(website_name):
             return False
     except Exception as e:
         print(e)
-        print("Exception during get_hsts. Args: " + website_name)
+        print("Exception during get_hsts. Args: " + website_name, file=sys.stderr)
     return False
 
 
@@ -117,6 +97,36 @@ def get_server_info(website_name, idx):
         print('Exception during server info routine. Args: ' + website_name, file=sys.stderr)
     return (http_server, insecure_http, redirect_to_https, hsts)
 
+possible_tls_versions = set(["SSLv2, SSLv3, TLSv1.0, TLSv1.1, TLSv1.2"])
+
+def get_tls_versions_info(website_name):
+    tls_versions = []
+    try:
+        output = subprocess.check_output(["nmap", "--script", "ssl-enum-ciphers", "-p", "443", website_name], timeout=2, stderr=subprocess.STDOUT).decode("utf-8")
+        output_lines = output.splitlines()
+        for line in output_lines:
+            line2 = line.split(':')[0]
+            line2 = line2.split('|')[1]
+            line2 = line2.strip()
+            if line2 in possible_tls_versions:
+                tls_versions.append(line2)
+    except Exception as e:
+        print(e)
+        print('Exception during server info routine. Args: ' + website_name, file=sys.stderr)
+    try:
+        output = subprocess.check_output(["openssl", "s_client", "-tls1_3", "-connect", website_name+":443"], input=b'', timeout=2, stderr=subprocess.STDOUT).decode("utf-8")
+        output_sections = output.split('---')
+        server_certificate_section = output_sections[2]
+        for line in server_certificate_section.splitlines():
+            line2 = line.strip()
+            if line2 == "Server certificate":
+                tls_versions.append("TLSv1.3")
+                break
+    except Exception as e:
+        print(e)
+        print('Exception during server info routine. Args: ' + website_name, file=sys.stderr)
+    return tls_versions
+
 for website_name in website_list:
     website_name = website_name.split('\n')[0]
     if website_name:
@@ -127,8 +137,10 @@ for website_name in website_list:
         website_data["ipv6_addresses"] = get_addresses(website_name, "AAAA")
         server_info = get_server_info(website_name, 0)
         website_data["http_server"] = server_info[0]
-        website_data["insecure_http"] = get_insecure_http_bool(website_name)
+        website_data["insecure_http"] = server_info[1]
         website_data["redirect_to_https"] = server_info[2]
+        website_data["hsts"] = server_info[3]
+        website_data["tls_versions"] = get_tls_versions_info(website_name)
         output_data[website_name] = website_data
 
 with open(output_file_name, "w") as f:
