@@ -28,6 +28,7 @@ def get_addresses(website_name, type):
                 output = subprocess.check_output(["nslookup", "-type="+type, website_name, dns_server], timeout=2, stderr=subprocess.STDOUT).decode("utf-8")
             except TimeoutExpired:
                 print('Timeout Error during nslookup', file=sys.stderr)
+                print(dns_server)
                 break
             except:
                 print('Exception during nslookup routine. Args: ' + type + ', ' + website_name + ', ' + dns_server, file=sys.stderr)
@@ -43,19 +44,27 @@ def get_addresses(website_name, type):
     return result
     
 def get_hsts(website_name):
+    hsts = False
+    website_name = website_name[8:]
+    len_name = len(website_name)
+    if website_name[-1] == "/":
+        if len_name > 1:
+            website_name = website_name[:len_name-1]
+            len_name = len_name - 1
+    website_name = website_name.split(':')[0]
     try:
-        conn = http_client.HTTPSConnection(website_name, port=443)
-        conn.request("GET", "/", body=None, headers={})
-        response = conn.getresponse()
-        hsts_val = response.getheader('strict-transport-security', default=None)
-        if hsts_val is not None:
-            return True
-        else:
-            return False
+        output = subprocess.check_output(["openssl", "s_client", "-crlf", "-connect", website_name+":443"], 
+            input=b'GET / HTTP1.0\r\nHost: "+website_name+"\r\n\r\n',timeout=2, stderr=subprocess.STDOUT).decode("utf-8")
+        output_sections = output.split('---')
+        response = output_sections[-1]
+        for line in response.splitlines():
+            line2 = line.split(':')[0].strip()
+            if line2 == 'strict-transport-security':
+                hsts = True
     except Exception as e:
         print(e)
         print("Exception during get_hsts. Args: " + website_name, file=sys.stderr)
-    return False
+    return hsts
 
 
 def get_server_info(website_name, idx):
@@ -97,7 +106,7 @@ def get_server_info(website_name, idx):
         print('Exception during server info routine. Args: ' + website_name, file=sys.stderr)
     return (http_server, insecure_http, redirect_to_https, hsts)
 
-possible_tls_versions = set(["SSLv2, SSLv3, TLSv1.0, TLSv1.1, TLSv1.2"])
+possible_tls_versions = set(["SSLv2", "SSLv3", "TLSv1.0", "TLSv1.1", "TLSv1.2"])
 
 def get_tls_versions_info(website_name):
     tls_versions = []
@@ -106,13 +115,17 @@ def get_tls_versions_info(website_name):
         output_lines = output.splitlines()
         for line in output_lines:
             line2 = line.split(':')[0]
-            line2 = line2.split('|')[1]
+            bar_split = line2.split('|')
+            if len(bar_split) <= 1:
+                continue
+            line2 = bar_split[1]
             line2 = line2.strip()
             if line2 in possible_tls_versions:
                 tls_versions.append(line2)
     except Exception as e:
         print(e)
-        print('Exception during server info routine. Args: ' + website_name, file=sys.stderr)
+        print('Exception during tls versions info routine. Args: ' + website_name, file=sys.stderr)
+        print('first exception')
     try:
         output = subprocess.check_output(["openssl", "s_client", "-tls1_3", "-connect", website_name+":443"], input=b'', timeout=2, stderr=subprocess.STDOUT).decode("utf-8")
         output_sections = output.split('---')
@@ -124,8 +137,28 @@ def get_tls_versions_info(website_name):
                 break
     except Exception as e:
         print(e)
-        print('Exception during server info routine. Args: ' + website_name, file=sys.stderr)
+        print('Exception during tls versions info routine. Args: ' + website_name, file=sys.stderr)
+        print('second exception')
     return tls_versions
+
+def get_root_ca(website_name):
+    root_ca = None
+    try:
+        output = subprocess.check_output(["openssl", "s_client", "-connect", website_name+":443"], input=b'', timeout=2, stderr=subprocess.STDOUT).decode("utf-8")
+        output_sections = output.split('---')
+        certificate_chain_section = output_sections[1]
+        last_line = certificate_chain_section[-1]
+        values = last_line.split(',')
+        for val in values:
+            val = val.strip()
+            if len(val) == 0:
+                continue
+            if val[0] == "O":
+                root_ca = val[4:]
+    except Exception as e:
+        print(e)
+        print('Exception during server info routine. Args: ' + website_name, file=sys.stderr)
+    return root_ca
 
 for website_name in website_list:
     website_name = website_name.split('\n')[0]
@@ -141,6 +174,7 @@ for website_name in website_list:
         website_data["redirect_to_https"] = server_info[2]
         website_data["hsts"] = server_info[3]
         website_data["tls_versions"] = get_tls_versions_info(website_name)
+        website_data["root_ca"] = get_root_ca(website_name)
         output_data[website_name] = website_data
 
 with open(output_file_name, "w") as f:
