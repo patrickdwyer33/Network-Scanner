@@ -146,19 +146,45 @@ def get_root_ca(website_name):
     try:
         output = subprocess.check_output(["openssl", "s_client", "-connect", website_name+":443"], input=b'', timeout=2, stderr=subprocess.STDOUT).decode("utf-8")
         output_sections = output.split('---')
-        certificate_chain_section = output_sections[1]
+        certificate_chain_section = output_sections[1].splitlines()
+        assert(certificate_chain_section != '')
+        last_idx = -1
         last_line = certificate_chain_section[-1]
+        while last_line == '' or last_line == '\n':
+            last_idx = last_idx - 1
+            last_line = certificate_chain_section[last_idx]
         values = last_line.split(',')
         for val in values:
             val = val.strip()
+            if len(val.split(':')) > 1:
+                val = val.split(':')[1]
             if len(val) == 0:
                 continue
-            if val[0] == "O":
+            if val[0] == "O" and val[1] == " ":
                 root_ca = val[4:]
     except Exception as e:
         print(e)
-        print('Exception during server info routine. Args: ' + website_name, file=sys.stderr)
+        print('Exception during get_root_ca routine. Args: ' + website_name, file=sys.stderr)
     return root_ca
+
+def get_rdns_names(ipaddr):
+    result = []
+    try:
+        output = subprocess.check_output(["nslookup", ipaddr], timeout=2, stderr=subprocess.STDOUT).decode("utf-8")
+        for line in output.splitlines():
+            splitted = line.split(' ')[-1]
+            try:
+                if splitted[-3] == "name":
+                    name = splitted[-1]
+                    name = name[:len(name)-1]
+                    result.append(name)
+            except:
+                pass
+    except TimeoutExpired:
+        print('Timeout Error during reverse nslookup', file=sys.stderr)
+    except:
+        print('Exception during reverse nslookup routine. Args: ' + ipaddr, file=sys.stderr)
+    return result
 
 for website_name in website_list:
     website_name = website_name.split('\n')[0]
@@ -175,6 +201,10 @@ for website_name in website_list:
         website_data["hsts"] = server_info[3]
         website_data["tls_versions"] = get_tls_versions_info(website_name)
         website_data["root_ca"] = get_root_ca(website_name)
+        rdns_names = []
+        for ipaddr in website_data["ipv4_addresses"]:
+            rdns_names = rdns_names + get_rdns_names(ipaddr)
+        website_data["rdns_names"] = rdns_names
         output_data[website_name] = website_data
 
 with open(output_file_name, "w") as f:
