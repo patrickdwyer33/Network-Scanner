@@ -1,5 +1,6 @@
 certifi==2022.9.24
 charset-normalizer==2.0.12
 idna==3.4
-requests==2.27.1
+maxminddb==2.2.0
+texttable==1.6.7
 urllib3==1.26.13

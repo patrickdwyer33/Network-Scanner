@@ -4,6 +4,8 @@ import json
 import subprocess
 from subprocess import TimeoutExpired
 import http.client as http_client
+import socket
+import maxminddb
 
 assert(len(sys.argv) == 3)
 
@@ -172,19 +174,59 @@ def get_rdns_names(ipaddr):
     try:
         output = subprocess.check_output(["nslookup", ipaddr], timeout=2, stderr=subprocess.STDOUT).decode("utf-8")
         for line in output.splitlines():
-            splitted = line.split(' ')[-1]
+            splitted = line.split(' ')
+            first_thing = splitted[0].split('\t')[1]
             try:
-                if splitted[-3] == "name":
+                if first_thing == "name":
                     name = splitted[-1]
                     name = name[:len(name)-1]
+                    print(name)
                     result.append(name)
             except:
                 pass
     except TimeoutExpired:
         print('Timeout Error during reverse nslookup', file=sys.stderr)
-    except:
+    except Exception as e:
+        print(e)
         print('Exception during reverse nslookup routine. Args: ' + ipaddr, file=sys.stderr)
     return result
+
+# can't establish a tcp connection over port 22 by def, so don't wanna do that here?...
+common_ports = [80, 443]
+
+def get_rtt(ipaddr):
+    rtts = []
+    for port in common_ports:
+        try:
+            first_time = time.time()
+            host_info = socket.getaddrinfo(host=ipaddr, port=port, family=socket.AF_INET, proto=socket.IPPROTO_TCP)
+            connection = host_info[0][4]
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            sock.connect(connection)
+            sock.close()
+            second_time = time.time()
+            rtt = second_time - first_time
+            rtts.append(rtt)
+        except TimeoutError:
+            print('Exception during get_rtt routine. Args: ' + ipaddr + ', ' + str(port), file=sys.stderr)
+            print('Timeout Error during get_rtt routine', file=sys.stderr)
+        except Exception as e:
+            print(e)
+            print('Exception during get_rtt routine. Args: ' + ipaddr + ', ' + str(port), file=sys.stderr)
+    return rtts
+
+def get_location(ipaddr):
+    location = []
+    try:
+        with maxminddb.open_database('GeoLite2-City.mmdb') as reader:
+            output = reader.get(ipaddr)
+            country = output['country']['names']['en']
+            location = [country]
+    except Exception as e:
+        print(e)
+        print('Exception during get_location routine. Args: ' + ipaddr, file=sys.stderr)
+    return location
 
 for website_name in website_list:
     website_name = website_name.split('\n')[0]
@@ -202,9 +244,21 @@ for website_name in website_list:
         website_data["tls_versions"] = get_tls_versions_info(website_name)
         website_data["root_ca"] = get_root_ca(website_name)
         rdns_names = []
+        rtts = []
+        locations = []
         for ipaddr in website_data["ipv4_addresses"]:
             rdns_names = rdns_names + get_rdns_names(ipaddr)
+            rtts = rtts + get_rtt(ipaddr)
+            locations = locations + get_location(ipaddr)
         website_data["rdns_names"] = rdns_names
+        if not rtts:
+            website_data["rtt_range"] = None
+        else:
+            website_data["rtt_range"] = [min(rtts)*1000, max(rtts)*1000]
+        if not locations:
+            website_data["geo_locations"] = None
+        else:
+            website_data["geo_locations"] = list(set(locations))
         output_data[website_name] = website_data
 
 with open(output_file_name, "w") as f:
